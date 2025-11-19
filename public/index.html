@@ -496,28 +496,26 @@
     </div>
 
     <script>
-        // ============================================
+        // ===========================================
         // CONFIGURACIÓN DE FIREBASE
-        // ============================================
+        // ===========================================
         
         // REEMPLAZA CON TU CONFIGURACIÓN DE FIREBASE
         const firebaseConfig = {
-            apiKey: "TU_API_KEY",
-            authDomain: "TU_PROJECT.firebaseapp.com",
-            projectId: "TU_PROJECT_ID",
-            storageBucket: "TU_PROJECT.appspot.com",
-            messagingSenderId: "123456789",
-            appId: "TU_APP_ID"
+            apiKey: "AIzaSyB3-OMTL5T30wGqw_6CEnXbWKIh5u-Acq8",
+            authDomain: "sms-platform-52034957-f237d.firebaseapp.com",
+            projectId: "sms-platform-52034957-f237d",
+            storageBucket: "sms-platform-52034957-f237d.firebasestorage.app",
+            messagingSenderId: "511714281726",
+            appId: "1:511714281726:web:d60dd5dd7328f7bed4bdaf"
         };
 
         // Inicializar Firebase
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
         
-        // URL de tu backend (puede ser local o en producción)
-        const API_URL = window.location.hostname === 'localhost' 
-            ? 'http://localhost:3000/api'
-            : 'https://tu-backend.onrender.com/api';
+        // URL de tu backend (ahora apunta a la ruta raíz)
+        const API_URL = '';
         
         // Variables globales
         let contacts = [];
@@ -571,22 +569,15 @@
         async function loadStats() {
             try {
                 // Contar mensajes enviados
-                const sentSnapshot = await db.collection('messages')
-                    .where('type', '==', 'sent')
-                    .get();
+                const sentSnapshot = await db.collection('messages').where('type', '==', 'sent').get();
                 
                 // Contar mensajes recibidos
-                const receivedSnapshot = await db.collection('messages')
-                    .where('type', '==', 'received')
-                    .get();
+                const receivedSnapshot = await db.collection('messages').where('type', '==', 'received').get();
                 
                 // Contar mensajes de hoy
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
-                const todaySnapshot = await db.collection('messages')
-                    .where('type', '==', 'sent')
-                    .where('createdAt', '>=', today)
-                    .get();
+                const todaySnapshot = await db.collection('messages').where('type', '==', 'sent').where('createdAt', '>=', today).get();
                 
                 // Contar contactos
                 const contactsSnapshot = await db.collection('contacts').get();
@@ -604,16 +595,10 @@
         // Cargar contactos
         async function loadContacts() {
             try {
-                const snapshot = await db.collection('contacts')
-                    .orderBy('name')
-                    .get();
-                
+                const snapshot = await db.collection('contacts').orderBy('name').get();
                 contacts = [];
                 snapshot.forEach(doc => {
-                    contacts.push({
-                        id: doc.id,
-                        ...doc.data()
-                    });
+                    contacts.push({ id: doc.id, ...doc.data() });
                 });
                 
                 updateContactsSelect();
@@ -639,7 +624,6 @@
         // Mostrar contactos
         function displayContacts() {
             const list = document.getElementById('contactsList');
-            
             if (contacts.length === 0) {
                 list.innerHTML = `
                     <div class="empty-state">
@@ -674,21 +658,23 @@
         // Agregar contacto
         document.getElementById('contactForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
             const name = document.getElementById('contactName').value.trim();
             const phoneNumber = document.getElementById('contactPhone').value.trim();
-            
             try {
-                await fetch(`${API_URL}/contacts`, {
+                const response = await fetch(`${API_URL}/contacts`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, phoneNumber })
                 });
-                
-                showAlert('contactAlert', '✅ Contacto agregado correctamente', 'success');
-                document.getElementById('contactForm').reset();
-                loadContacts();
-                loadStats();
+                const data = await response.json();
+                 if (response.ok && data.success) {
+                    showAlert('contactAlert', '✅ Contacto agregado correctamente', 'success');
+                    document.getElementById('contactForm').reset();
+                    loadContacts();
+                    loadStats();
+                } else {
+                    showAlert('contactAlert', `❌ Error: ${data.error || 'Error desconocido'}`, 'error');
+                }
             } catch (error) {
                 showAlert('contactAlert', '❌ Error: ' + error.message, 'error');
             }
@@ -697,12 +683,8 @@
         // Eliminar contacto
         async function deleteContact(id) {
             if (!confirm('¿Estás seguro de eliminar este contacto?')) return;
-            
             try {
-                await fetch(`${API_URL}/contacts/${id}`, {
-                    method: 'DELETE'
-                });
-                
+                await fetch(`${API_URL}/contacts/${id}`, { method: 'DELETE' });
                 showAlert('contactAlert', '✅ Contacto eliminado', 'success');
                 loadContacts();
                 loadStats();
@@ -714,38 +696,32 @@
         // Enviar SMS
         document.getElementById('sendForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
             const recipientSelect = document.getElementById('recipient').value;
             const phoneInput = document.getElementById('phoneNumber').value.trim();
             const phoneNumber = recipientSelect || phoneInput;
             const message = document.getElementById('message').value.trim();
-            
             if (!phoneNumber || !message) {
                 showAlert('sendAlert', '❌ Completa todos los campos', 'error');
                 return;
             }
-            
             const sendBtn = document.getElementById('sendBtn');
             sendBtn.disabled = true;
             sendBtn.innerHTML = '<span class="loader"></span> Enviando...';
-            
             try {
                 const response = await fetch(`${API_URL}/send-sms`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ phoneNumber, message })
                 });
-                
                 const data = await response.json();
-                
-                if (data.success) {
+                if (response.ok && data.success) {
                     showAlert('sendAlert', '✅ SMS enviado exitosamente!', 'success');
                     document.getElementById('sendForm').reset();
                     document.getElementById('charCount').textContent = '0';
                     loadStats();
                     loadHistory();
                 } else {
-                    showAlert('sendAlert', '❌ Error: ' + data.error, 'error');
+                    showAlert('sendAlert', `❌ Error: ${data.error || 'Error del servidor'}` , 'error');
                 }
             } catch (error) {
                 showAlert('sendAlert', '❌ Error de conexión: ' + error.message, 'error');
@@ -755,56 +731,35 @@
             }
         });
 
-        // Cargar historial desde Firebase
+        // Cargar historial
         async function loadHistory() {
             try {
-                const snapshot = await db.collection('messages')
-                    .where('type', '==', 'sent')
-                    .orderBy('createdAt', 'desc')
-                    .limit(50)
-                    .get();
-                
+                const snapshot = await db.collection('messages').where('type', '==', 'sent').orderBy('createdAt', 'desc').limit(50).get();
                 const messages = [];
-                snapshot.forEach(doc => {
-                    messages.push({
-                        id: doc.id,
-                        ...doc.data()
-                    });
-                });
-                
+                snapshot.forEach(doc => messages.push({ id: doc.id, ...doc.data() }));
                 displayMessages(messages, 'historyList');
             } catch (error) {
                 showAlert('historyAlert', '❌ Error cargando historial', 'error');
+                console.error('Error detallado (Historial):', error);
             }
         }
 
         // Cargar bandeja de entrada
         async function loadInbox() {
             try {
-                const snapshot = await db.collection('messages')
-                    .where('type', '==', 'received')
-                    .orderBy('createdAt', 'desc')
-                    .limit(50)
-                    .get();
-                
+                const snapshot = await db.collection('messages').where('type', '==', 'received').orderBy('createdAt', 'desc').limit(50).get();
                 const messages = [];
-                snapshot.forEach(doc => {
-                    messages.push({
-                        id: doc.id,
-                        ...doc.data()
-                    });
-                });
-                
+                snapshot.forEach(doc => messages.push({ id: doc.id, ...doc.data() }));
                 displayMessages(messages, 'inboxList', true);
             } catch (error) {
                 showAlert('inboxAlert', '❌ Error cargando mensajes', 'error');
+                console.error('Error detallado (Bandeja de Entrada):', error);
             }
         }
 
         // Mostrar mensajes
         function displayMessages(messages, listId, isInbox = false) {
             const list = document.getElementById(listId);
-            
             if (messages.length === 0) {
                 list.innerHTML = `
                     <div class="empty-state">
@@ -815,9 +770,8 @@
                 `;
                 return;
             }
-            
             list.innerHTML = messages.map(msg => {
-                const date = msg.timestamp ? new Date(msg.timestamp) : new Date();
+                const date = msg.createdAt?.toDate ? msg.createdAt.toDate() : new Date();
                 return `
                     <div class="message-item ${msg.type}">
                         <div class="message-header">
@@ -837,7 +791,6 @@
         function showAlert(elementId, message, type) {
             const alertDiv = document.getElementById(elementId);
             alertDiv.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
-            
             setTimeout(() => {
                 alertDiv.innerHTML = '';
             }, 5000);
