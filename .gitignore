@@ -1,0 +1,28 @@
+```
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Base de datos (no subir datos privados)
+*.db
+*.sqlite
+*.sqlite3
+
+# Variables de entorno (IMPORTANTE)
+.env
+
+# Logs
+logs/
+*.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporal
+temp/
+tmp/
