@@ -26,3 +26,5 @@ Thumbs.db
 # Temporal
 temp/
 tmp/
+
+serviceAccountKey.json

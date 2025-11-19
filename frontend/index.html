@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plataforma SMS</title>
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    
     <style>
         * {
             margin: 0;
@@ -198,11 +203,6 @@
             transform: none;
         }
         
-        .btn-secondary {
-            background: #6c757d;
-            margin-left: 10px;
-        }
-        
         .btn-danger {
             background: #dc3545;
             padding: 8px 15px;
@@ -376,7 +376,7 @@
     <div class="container">
         <header>
             <h1>📱 Plataforma SMS Gateway</h1>
-            <p class="subtitle">Sistema de gestión de mensajes SMS</p>
+            <p class="subtitle">Sistema de gestión de mensajes SMS con Firebase</p>
         </header>
 
         <div class="stats-grid" id="statsGrid">
@@ -416,7 +416,7 @@
             <form id="sendForm">
                 <div class="form-group">
                     <label for="recipient">📞 Destinatario</label>
-                    <select id="recipient" required>
+                    <select id="recipient">
                         <option value="">Seleccionar contacto o ingresar número...</option>
                     </select>
                 </div>
@@ -496,7 +496,28 @@
     </div>
 
     <script>
-        const API_URL = 'http://localhost:3000/api';
+        // ============================================
+        // CONFIGURACIÓN DE FIREBASE
+        // ============================================
+        
+        // REEMPLAZA CON TU CONFIGURACIÓN DE FIREBASE
+        const firebaseConfig = {
+            apiKey: "TU_API_KEY",
+            authDomain: "TU_PROJECT.firebaseapp.com",
+            projectId: "TU_PROJECT_ID",
+            storageBucket: "TU_PROJECT.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "TU_APP_ID"
+        };
+
+        // Inicializar Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        
+        // URL de tu backend (puede ser local o en producción)
+        const API_URL = window.location.hostname === 'localhost' 
+            ? 'http://localhost:3000/api'
+            : 'https://tu-backend.onrender.com/api';
         
         // Variables globales
         let contacts = [];
@@ -546,18 +567,35 @@
             document.getElementById('charCount').textContent = e.target.value.length;
         });
 
-        // Cargar estadísticas
+        // Cargar estadísticas desde Firebase
         async function loadStats() {
             try {
-                const response = await fetch(`${API_URL}/stats`);
-                const data = await response.json();
+                // Contar mensajes enviados
+                const sentSnapshot = await db.collection('messages')
+                    .where('type', '==', 'sent')
+                    .get();
                 
-                if (data.success) {
-                    document.getElementById('statSent').textContent = data.data.total_sent;
-                    document.getElementById('statReceived').textContent = data.data.total_received;
-                    document.getElementById('statToday').textContent = data.data.today_sent;
-                    document.getElementById('statContacts').textContent = data.data.total_contacts;
-                }
+                // Contar mensajes recibidos
+                const receivedSnapshot = await db.collection('messages')
+                    .where('type', '==', 'received')
+                    .get();
+                
+                // Contar mensajes de hoy
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const todaySnapshot = await db.collection('messages')
+                    .where('type', '==', 'sent')
+                    .where('createdAt', '>=', today)
+                    .get();
+                
+                // Contar contactos
+                const contactsSnapshot = await db.collection('contacts').get();
+                
+                document.getElementById('statSent').textContent = sentSnapshot.size;
+                document.getElementById('statReceived').textContent = receivedSnapshot.size;
+                document.getElementById('statToday').textContent = todaySnapshot.size;
+                document.getElementById('statContacts').textContent = contactsSnapshot.size;
+                
             } catch (error) {
                 console.error('Error cargando estadísticas:', error);
             }
@@ -566,14 +604,20 @@
         // Cargar contactos
         async function loadContacts() {
             try {
-                const response = await fetch(`${API_URL}/contacts`);
-                const data = await response.json();
+                const snapshot = await db.collection('contacts')
+                    .orderBy('name')
+                    .get();
                 
-                if (data.success) {
-                    contacts = data.data;
-                    updateContactsSelect();
-                    displayContacts();
-                }
+                contacts = [];
+                snapshot.forEach(doc => {
+                    contacts.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                
+                updateContactsSelect();
+                displayContacts();
             } catch (error) {
                 console.error('Error cargando contactos:', error);
             }
@@ -586,8 +630,8 @@
             
             contacts.forEach(contact => {
                 const option = document.createElement('option');
-                option.value = contact.phone_number;
-                option.textContent = `${contact.name} (${contact.phone_number})`;
+                option.value = contact.phoneNumber;
+                option.textContent = `${contact.name} (${contact.phoneNumber})`;
                 select.appendChild(option);
             });
         }
@@ -611,11 +655,11 @@
                 <div class="contact-item">
                     <div class="contact-info">
                         <h3>${contact.name}</h3>
-                        <p>${contact.phone_number}</p>
+                        <p>${contact.phoneNumber}</p>
                     </div>
                     <div class="contact-actions">
-                        <button onclick="sendToContact('${contact.phone_number}')" style="padding: 8px 15px; font-size: 14px;">📤 Enviar SMS</button>
-                        <button class="btn-danger" onclick="deleteContact(${contact.id})">🗑️</button>
+                        <button onclick="sendToContact('${contact.phoneNumber}')" style="padding: 8px 15px; font-size: 14px;">📤 Enviar SMS</button>
+                        <button class="btn-danger" onclick="deleteContact('${contact.id}')">🗑️</button>
                     </div>
                 </div>
             `).join('');
@@ -635,24 +679,18 @@
             const phoneNumber = document.getElementById('contactPhone').value.trim();
             
             try {
-                const response = await fetch(`${API_URL}/contacts`, {
+                await fetch(`${API_URL}/contacts`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, phoneNumber })
                 });
                 
-                const data = await response.json();
-                
-                if (data.success) {
-                    showAlert('contactAlert', '✅ Contacto agregado correctamente', 'success');
-                    document.getElementById('contactForm').reset();
-                    loadContacts();
-                    loadStats();
-                } else {
-                    showAlert('contactAlert', '❌ ' + data.error, 'error');
-                }
+                showAlert('contactAlert', '✅ Contacto agregado correctamente', 'success');
+                document.getElementById('contactForm').reset();
+                loadContacts();
+                loadStats();
             } catch (error) {
-                showAlert('contactAlert', '❌ Error de conexión', 'error');
+                showAlert('contactAlert', '❌ Error: ' + error.message, 'error');
             }
         });
 
@@ -661,21 +699,15 @@
             if (!confirm('¿Estás seguro de eliminar este contacto?')) return;
             
             try {
-                const response = await fetch(`${API_URL}/contacts/${id}`, {
+                await fetch(`${API_URL}/contacts/${id}`, {
                     method: 'DELETE'
                 });
                 
-                const data = await response.json();
-                
-                if (data.success) {
-                    showAlert('contactAlert', '✅ Contacto eliminado', 'success');
-                    loadContacts();
-                    loadStats();
-                } else {
-                    showAlert('contactAlert', '❌ Error al eliminar', 'error');
-                }
+                showAlert('contactAlert', '✅ Contacto eliminado', 'success');
+                loadContacts();
+                loadStats();
             } catch (error) {
-                showAlert('contactAlert', '❌ Error de conexión', 'error');
+                showAlert('contactAlert', '❌ Error: ' + error.message, 'error');
             }
         }
 
@@ -723,15 +755,24 @@
             }
         });
 
-        // Cargar historial
+        // Cargar historial desde Firebase
         async function loadHistory() {
             try {
-                const response = await fetch(`${API_URL}/messages?type=sent`);
-                const data = await response.json();
+                const snapshot = await db.collection('messages')
+                    .where('type', '==', 'sent')
+                    .orderBy('createdAt', 'desc')
+                    .limit(50)
+                    .get();
                 
-                if (data.success) {
-                    displayMessages(data.data, 'historyList');
-                }
+                const messages = [];
+                snapshot.forEach(doc => {
+                    messages.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                
+                displayMessages(messages, 'historyList');
             } catch (error) {
                 showAlert('historyAlert', '❌ Error cargando historial', 'error');
             }
@@ -740,12 +781,21 @@
         // Cargar bandeja de entrada
         async function loadInbox() {
             try {
-                const response = await fetch(`${API_URL}/messages?type=received`);
-                const data = await response.json();
+                const snapshot = await db.collection('messages')
+                    .where('type', '==', 'received')
+                    .orderBy('createdAt', 'desc')
+                    .limit(50)
+                    .get();
                 
-                if (data.success) {
-                    displayMessages(data.data, 'inboxList', true);
-                }
+                const messages = [];
+                snapshot.forEach(doc => {
+                    messages.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                
+                displayMessages(messages, 'inboxList', true);
             } catch (error) {
                 showAlert('inboxAlert', '❌ Error cargando mensajes', 'error');
             }
@@ -767,12 +817,12 @@
             }
             
             list.innerHTML = messages.map(msg => {
-                const date = new Date(msg.created_at);
+                const date = msg.timestamp ? new Date(msg.timestamp) : new Date();
                 return `
                     <div class="message-item ${msg.type}">
                         <div class="message-header">
                             <div>
-                                <span class="message-phone">${msg.phone_number}</span>
+                                <span class="message-phone">${msg.phoneNumber}</span>
                                 <span class="message-type ${msg.type}">${msg.type === 'sent' ? 'ENVIADO' : 'RECIBIDO'}</span>
                             </div>
                             <span class="message-date">${date.toLocaleString('es-CR')}</span>

@@ -1,42 +1,30 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const Database = require('better-sqlite3');
+const admin = require('firebase-admin');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Inicializar base de datos
-const db = new Database('sms-platform.db');
+// Inicializar Firebase Admin
+admin.initializeApp({
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+  })
+});
 
-// Crear tablas si no existen
-db.exec(`
-  CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    phone_number TEXT NOT NULL,
-    message TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',
-    type TEXT DEFAULT 'sent',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    gateway_message_id TEXT
-  );
+const db = admin.firestore();
 
-  CREATE TABLE IF NOT EXISTS contacts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    phone_number TEXT NOT NULL UNIQUE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS webhooks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    received_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+// ============================================
+// COLECCIONES DE FIRESTORE
+// ============================================
+const messagesRef = db.collection('messages');
+const contactsRef = db.collection('contacts');
+const webhooksRef = db.collection('webhooks');
 
 // ============================================
 // FUNCIONES AUXILIARES
@@ -91,25 +79,22 @@ app.post('/api/send-sms', async (req, res) => {
     // Enviar al gateway
     const result = await sendSMSToGateway(phoneNumber, message);
     
-    // Guardar en base de datos
-    const stmt = db.prepare(`
-      INSERT INTO messages (phone_number, message, status, type, gateway_message_id)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-    
-    const info = stmt.run(
-      phoneNumber, 
-      message, 
-      'sent', 
-      'sent',
-      result.id || null
-    );
+    // Guardar en Firestore
+    const messageDoc = await messagesRef.add({
+      phoneNumber: phoneNumber,
+      message: message,
+      status: 'sent',
+      type: 'sent',
+      gatewayMessageId: result.id || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: new Date().toISOString()
+    });
 
     res.json({ 
       success: true, 
       data: {
-        id: info.lastInsertRowid,
-        gateway_response: result
+        id: messageDoc.id,
+        gatewayResponse: result
       }
     });
 
@@ -122,56 +107,38 @@ app.post('/api/send-sms', async (req, res) => {
   }
 });
 
-// Obtener estadísticas
-app.get('/api/stats', (req, res) => {
+// Obtener historial de mensajes
+app.get('/api/messages', async (req, res) => {
   try {
-    const stats = {
-      total_sent: 0,
-      total_received: 0,
-      today_sent: 0,
-      total_contacts: 0
-    };
+    const type = req.query.type || 'all';
+    const limit = parseInt(req.query.limit) || 50;
     
-    // Contar mensajes enviados
-    try {
-      const sentResult = db.prepare(`SELECT COUNT(*) as count FROM messages WHERE type = 'sent'`).get();
-      stats.total_sent = sentResult ? sentResult.count : 0;
-    } catch (e) {
-      console.error('Error contando enviados:', e.message);
+    let query = messagesRef.orderBy('createdAt', 'desc').limit(limit);
+    
+    if (type !== 'all') {
+      query = messagesRef
+        .where('type', '==', type)
+        .orderBy('createdAt', 'desc')
+        .limit(limit);
     }
     
-    // Contar mensajes recibidos
-    try {
-      const receivedResult = db.prepare(`SELECT COUNT(*) as count FROM messages WHERE type = 'received'`).get();
-      stats.total_received = receivedResult ? receivedResult.count : 0;
-    } catch (e) {
-      console.error('Error contando recibidos:', e.message);
-    }
+    const snapshot = await query.get();
+    const messages = [];
     
-    // Contar mensajes de hoy
-    try {
-      const todayResult = db.prepare(`
-        SELECT COUNT(*) as count FROM messages 
-        WHERE type = 'sent' AND DATE(created_at) = DATE('now')
-      `).get();
-      stats.today_sent = todayResult ? todayResult.count : 0;
-    } catch (e) {
-      console.error('Error contando hoy:', e.message);
-    }
+    snapshot.forEach(doc => {
+      messages.push({
+        id: doc.id,
+        ...doc.data(),
+        created_at: doc.data().timestamp || doc.data().createdAt?.toDate()?.toISOString()
+      });
+    });
     
-    // Contar contactos
-    try {
-      const contactsResult = db.prepare(`SELECT COUNT(*) as count FROM contacts`).get();
-      stats.total_contacts = contactsResult ? contactsResult.count : 0;
-    } catch (e) {
-      console.error('Error contando contactos:', e.message);
-    }
-    
-    console.log('Estadísticas calculadas:', stats);
-    res.json({ success: true, data: stats });
-    
+    res.json({ 
+      success: true, 
+      data: messages 
+    });
   } catch (error) {
-    console.error('Error general en /api/stats:', error);
+    console.error('Error en /api/messages:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 
@@ -180,20 +147,44 @@ app.get('/api/stats', (req, res) => {
 });
 
 // Obtener estadísticas
-app.get('/api/stats', (req, res) => {
+app.get('/api/stats', async (req, res) => {
   try {
+    // Contar mensajes enviados
+    const sentSnapshot = await messagesRef
+      .where('type', '==', 'sent')
+      .count()
+      .get();
+    
+    // Contar mensajes recibidos
+    const receivedSnapshot = await messagesRef
+      .where('type', '==', 'received')
+      .count()
+      .get();
+    
+    // Contar mensajes de hoy
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todaySnapshot = await messagesRef
+      .where('type', '==', 'sent')
+      .where('createdAt', '>=', today)
+      .count()
+      .get();
+    
+    // Contar contactos
+    const contactsSnapshot = await contactsRef.count().get();
+    
     const stats = {
-      total_sent: db.prepare('SELECT COUNT(*) as count FROM messages WHERE type = "sent"').get().count,
-      total_received: db.prepare('SELECT COUNT(*) as count FROM messages WHERE type = "received"').get().count,
-      today_sent: db.prepare(`
-        SELECT COUNT(*) as count FROM messages 
-        WHERE type = "sent" AND DATE(created_at) = DATE('now')
-      `).get().count,
-      total_contacts: db.prepare('SELECT COUNT(*) as count FROM contacts').get().count
+      total_sent: sentSnapshot.data().count,
+      total_received: receivedSnapshot.data().count,
+      today_sent: todaySnapshot.data().count,
+      total_contacts: contactsSnapshot.data().count
     };
     
+    console.log('Estadísticas calculadas:', stats);
     res.json({ success: true, data: stats });
+    
   } catch (error) {
+    console.error('Error en /api/stats:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 
@@ -206,11 +197,21 @@ app.get('/api/stats', (req, res) => {
 // ============================================
 
 // Obtener todos los contactos
-app.get('/api/contacts', (req, res) => {
+app.get('/api/contacts', async (req, res) => {
   try {
-    const contacts = db.prepare('SELECT * FROM contacts ORDER BY name').all();
+    const snapshot = await contactsRef.orderBy('name').get();
+    const contacts = [];
+    
+    snapshot.forEach(doc => {
+      contacts.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
     res.json({ success: true, data: contacts });
   } catch (error) {
+    console.error('Error en /api/contacts:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 
@@ -219,7 +220,7 @@ app.get('/api/contacts', (req, res) => {
 });
 
 // Agregar contacto
-app.post('/api/contacts', (req, res) => {
+app.post('/api/contacts', async (req, res) => {
   try {
     const { name, phoneNumber } = req.body;
     
@@ -230,48 +231,53 @@ app.post('/api/contacts', (req, res) => {
       });
     }
 
-    const stmt = db.prepare(`
-      INSERT INTO contacts (name, phone_number)
-      VALUES (?, ?)
-    `);
+    // Verificar si ya existe
+    const existingSnapshot = await contactsRef
+      .where('phoneNumber', '==', phoneNumber)
+      .get();
     
-    const info = stmt.run(name, phoneNumber);
-    
-    res.json({ 
-      success: true, 
-      data: { id: info.lastInsertRowid, name, phoneNumber }
-    });
-  } catch (error) {
-    if (error.message.includes('UNIQUE')) {
-      res.status(400).json({ 
+    if (!existingSnapshot.empty) {
+      return res.status(400).json({ 
         success: false, 
         error: 'Este número ya existe en contactos' 
       });
-    } else {
-      res.status(500).json({ 
-        success: false, 
-        error: error.message 
-      });
     }
+
+    // Agregar contacto
+    const contactDoc = await contactsRef.add({
+      name: name,
+      phoneNumber: phoneNumber,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        id: contactDoc.id, 
+        name, 
+        phoneNumber 
+      }
+    });
+  } catch (error) {
+    console.error('Error en /api/contacts:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
 // Eliminar contacto
-app.delete('/api/contacts/:id', (req, res) => {
+app.delete('/api/contacts/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const stmt = db.prepare('DELETE FROM contacts WHERE id = ?');
-    const info = stmt.run(id);
     
-    if (info.changes === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Contacto no encontrado' 
-      });
-    }
+    await contactsRef.doc(id).delete();
     
     res.json({ success: true });
   } catch (error) {
+    console.error('Error en /api/contacts/:id:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 
@@ -283,33 +289,32 @@ app.delete('/api/contacts/:id', (req, res) => {
 // WEBHOOK PARA RECIBIR SMS
 // ============================================
 
-app.post('/api/webhook', (req, res) => {
+app.post('/api/webhook', async (req, res) => {
   try {
     console.log('📩 Webhook recibido:', JSON.stringify(req.body, null, 2));
     
     const { event, payload } = req.body;
     
     // Guardar webhook completo
-    const webhookStmt = db.prepare(`
-      INSERT INTO webhooks (event, payload)
-      VALUES (?, ?)
-    `);
-    webhookStmt.run(event, JSON.stringify(payload));
+    await webhooksRef.add({
+      event: event,
+      payload: payload,
+      receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: new Date().toISOString()
+    });
     
     // Si es un SMS recibido, guardarlo en mensajes
     if (event === 'sms:received' && payload) {
-      const messageStmt = db.prepare(`
-        INSERT INTO messages (phone_number, message, status, type, gateway_message_id)
-        VALUES (?, ?, ?, ?, ?)
-      `);
-      
-      messageStmt.run(
-        payload.phoneNumber,
-        payload.message,
-        'received',
-        'received',
-        payload.messageId
-      );
+      await messagesRef.add({
+        phoneNumber: payload.phoneNumber,
+        message: payload.message,
+        status: 'received',
+        type: 'received',
+        gatewayMessageId: payload.messageId,
+        receivedAt: payload.receivedAt,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        timestamp: new Date().toISOString()
+      });
       
       console.log(`✅ SMS guardado de: ${payload.phoneNumber}`);
     }
@@ -332,7 +337,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     message: 'API funcionando correctamente',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    firebase: 'connected'
   });
 });
 
@@ -347,15 +353,14 @@ app.listen(PORT, () => {
 ║   🚀 SERVIDOR SMS INICIADO             ║
 ╠════════════════════════════════════════╣
 ║   📡 URL: http://localhost:${PORT}     ║
+║   🔥 Firebase: Conectado               ║
 ║   📱 Gateway: ${process.env.GATEWAY_URL}
-║   ✅ Base de datos inicializada        ║
 ╚════════════════════════════════════════╝
   `);
 });
 
 // Manejo de cierre graceful
 process.on('SIGINT', () => {
-  db.close();
   console.log('\n👋 Servidor cerrado correctamente');
   process.exit(0);
 });
